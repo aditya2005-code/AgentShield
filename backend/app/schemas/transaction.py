@@ -24,3 +24,12 @@ class TransactionCreate(TransactionBase):
 class TransactionResponse(TransactionBase):
     id: uuid.UUID
     created_at: datetime
+
+from app.schemas.merchant import MerchantSummary
+from app.schemas.customer import CustomerSummary
+from app.schemas.device import DeviceSummary
+
+class TransactionDetailResponse(TransactionResponse):
+    merchant: MerchantSummary
+    customer: CustomerSummary
+    device: Optional[DeviceSummary] = None

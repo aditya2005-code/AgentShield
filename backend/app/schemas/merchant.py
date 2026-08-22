@@ -16,3 +16,8 @@ class MerchantResponse(MerchantBase):
     id: uuid.UUID
     created_at: datetime
     updated_at: datetime
+
+class MerchantSummary(BaseSchema):
+    id: uuid.UUID
+    name: str
+    slug: str

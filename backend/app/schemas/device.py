@@ -16,3 +16,8 @@ class DeviceCreate(DeviceBase):
 
 class DeviceResponse(DeviceBase):
     id: uuid.UUID
+
+class DeviceSummary(BaseSchema):
+    id: uuid.UUID
+    device_fingerprint: str
+    device_type: str
