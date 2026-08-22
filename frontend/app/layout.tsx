@@ -17,6 +17,9 @@ export const metadata: Metadata = {
   description: "Centralized deterministic authorization and policy enforcement for financial AI agents",
 };
 
+import { Sidebar } from "@/components/layout/sidebar";
+import { Topbar } from "@/components/layout/topbar";
+
 export default function RootLayout({
   children,
 }: {
@@ -25,9 +28,15 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-slate-950 text-slate-100 min-h-screen`}
+        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-slate-950 text-slate-100 min-h-screen flex flex-col md:flex-row`}
       >
-        {children}
+        <Sidebar />
+        <div className="flex-1 flex flex-col min-h-screen overflow-x-hidden">
+          <Topbar />
+          <main className="flex-1 p-6 md:p-8">
+            {children}
+          </main>
+        </div>
       </body>
     </html>
   );
