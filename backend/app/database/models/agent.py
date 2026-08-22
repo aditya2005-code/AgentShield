@@ -1,30 +1,36 @@
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
 from sqlalchemy import String, DateTime, Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database.base import Base
-from app.database.models.enums import MerchantStatus
+from app.database.models.enums import AgentType, AgentStatus
 
-class Merchant(Base):
-    __tablename__ = "merchants"
+class Agent(Base):
+    __tablename__ = "agents"
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), 
         primary_key=True, 
         default=uuid.uuid4
     )
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    slug: Mapped[str] = mapped_column(
+    agent_key: Mapped[str] = mapped_column(
         String(255), 
         nullable=False, 
         unique=True, 
         index=True
     )
-    status: Mapped[MerchantStatus] = mapped_column(
-        SQLEnum(MerchantStatus, native_enum=False), 
+    agent_type: Mapped[AgentType] = mapped_column(
+        SQLEnum(AgentType, native_enum=False), 
+        nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    status: Mapped[AgentStatus] = mapped_column(
+        SQLEnum(AgentStatus, native_enum=False), 
         nullable=False, 
-        default=MerchantStatus.ACTIVE
+        default=AgentStatus.ACTIVE
     )
     
     created_at: Mapped[datetime] = mapped_column(
@@ -40,21 +46,11 @@ class Merchant(Base):
     )
 
     # Relationships
-    customers: Mapped[list["Customer"]] = relationship(
-        back_populates="merchant", 
-        cascade="all, delete-orphan"
-    )
-    transactions: Mapped[list["Transaction"]] = relationship(
-        back_populates="merchant"
-    )
     proposals: Mapped[list["AgentProposal"]] = relationship(
-        back_populates="merchant",
+        back_populates="agent", 
         cascade="all, delete-orphan"
     )
-    policies: Mapped[list["MerchantPolicy"]] = relationship(
-        back_populates="merchant",
+    permissions: Mapped[list["AgentPermission"]] = relationship(
+        back_populates="agent", 
         cascade="all, delete-orphan"
-    )
-    audit_logs: Mapped[list["AuditLog"]] = relationship(
-        back_populates="merchant"
     )
