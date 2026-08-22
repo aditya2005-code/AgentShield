@@ -21,3 +21,17 @@ class ShieldDecisionCreate(ShieldDecisionBase):
 class ShieldDecisionResponse(ShieldDecisionBase):
     decision_id: uuid.UUID = Field(..., validation_alias="id")
     created_at: datetime
+
+from app.schemas.agent import AgentSummary
+
+class ProposalSummary(BaseSchema):
+    proposal_id: uuid.UUID = Field(..., validation_alias="id")
+    event_type: str
+    event_id: str
+    action: str
+    confidence: float
+    status: str
+
+class ShieldDecisionDetailResponse(ShieldDecisionResponse):
+    proposal: ProposalSummary
+    agent: Optional[AgentSummary] = None

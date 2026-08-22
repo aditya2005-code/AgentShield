@@ -19,3 +19,9 @@ class CustomerResponse(CustomerBase):
     id: uuid.UUID
     created_at: datetime
     updated_at: datetime
+
+class CustomerSummary(BaseSchema):
+    id: uuid.UUID
+    external_customer_id: str
+    email: str
+    full_name: str

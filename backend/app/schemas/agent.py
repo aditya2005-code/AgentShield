@@ -19,3 +19,9 @@ class AgentResponse(AgentBase):
     id: uuid.UUID
     created_at: datetime
     updated_at: datetime
+
+class AgentSummary(BaseSchema):
+    id: uuid.UUID
+    agent_key: str
+    agent_type: AgentType
+    name: str
