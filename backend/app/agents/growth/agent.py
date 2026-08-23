@@ -3,9 +3,10 @@ import uuid
 from sqlalchemy.orm import Session
 from app.agents.base import BaseAgent
 from app.agents.growth.context import gather_growth_context
+from app.llm.provider import LLMProvider
 from app.database.models.agent import Agent
 from app.database.models.agent_proposal import AgentProposal
-from app.database.models.enums import ImpactLevel, ProposalStatus
+from app.database.models.enums import ProposalStatus
 
 class GrowthAgent(BaseAgent):
     @property
@@ -19,7 +20,6 @@ class GrowthAgent(BaseAgent):
         merchant_id: str,
         db: Session
     ) -> AgentProposal:
-        # For growth agent, event_id represents customer_id, and merchant_id represents merchant_id
         m_id = uuid.UUID(merchant_id)
         c_id = uuid.UUID(event_id)
 
@@ -28,46 +28,52 @@ class GrowthAgent(BaseAgent):
             raise ValueError(f"Growth Context could not be gathered. Check that customer {c_id} exists and belongs to merchant {m_id}.")
 
         customer = context.customer
+        merchant = context.merchant
         history = context.customer_history
 
-        # Heuristic spending rules
-        # 1. Seed scenario match: Rohan Das (cust_sf_001) cart abandonment recovery discount
-        if customer.external_customer_id == "cust_sf_001":
-            action = "APPLY_DISCOUNT"
-            action_parameters = {"discount_percent": 25}
-            confidence = Decimal("0.8500")
-            financial_impact = ImpactLevel.MEDIUM
-            customer_impact = ImpactLevel.LOW
-            evidence = ["CART_ABANDONMENT_HIGH_VALUE"]
-            reason_summary = "High-value cart abandoned by customer. Proposing 25% recovery discount promotion."
-        # 2. High spending upsell
-        elif history and sum(t.amount for t in history if t.status.value == "SUCCESS") / len([t for t in history if t.status.value == "SUCCESS"] or [1]) >= Decimal("50000.00"):
-            action = "OFFER_UPSELL"
-            action_parameters = {"upsell_item": "extended_warranty"}
-            confidence = Decimal("0.8000")
-            financial_impact = ImpactLevel.LOW
-            customer_impact = ImpactLevel.LOW
-            evidence = ["HIGH_VALUE_LOYAL_CUSTOMER"]
-            reason_summary = "Customer has high average order value. Offering premium product upsell opportunity."
-        # 3. Dormant retention promotion
-        elif history and all((t.occurred_at - t.occurred_at).total_seconds() > 30 * 24 * 3600 for t in history):
-            action = "SEND_PROMOTION"
-            action_parameters = {"promo_code": "RETENTION_15"}
-            confidence = Decimal("0.7500")
-            financial_impact = ImpactLevel.LOW
-            customer_impact = ImpactLevel.LOW
-            evidence = ["INACTIVE_CUSTOMER_30D"]
-            reason_summary = "Customer has been inactive for over 30 days. Sending welcome back promotional offer."
-        # 4. Standard baseline
-        else:
-            action = "NO_ACTION"
-            action_parameters = None
-            confidence = Decimal("1.0000")
-            financial_impact = ImpactLevel.LOW
-            customer_impact = ImpactLevel.LOW
-            evidence = []
-            reason_summary = "Customer spending patterns are stable. No growth actions required."
+        # Construct context prompt for Gemini
+        prompt = f"""
+You are the Growth Incentives Agent of AgentShield.
+Your task is to analyze the customer shopping history and behavior at this merchant to propose growth incentives or retention activities.
 
+[CRITICAL INSTRUCTIONS]
+1. Use ONLY the provided context. Do NOT assume, extrapolate, or invent facts.
+2. Formulate promotions or discounts based on behavior (e.g., offer VIP upsell for high average spend, discount code for abandoned carts or dormancy).
+3. You must output ONLY a valid JSON object matching the schema below. No explanation, markdown formatting, or surrounding text.
+4. Allowed actions: SEND_PROMOTION, APPLY_DISCOUNT, OFFER_UPSELL, NO_ACTION.
+
+[REQUIRED JSON SCHEMA]
+{{
+  "proposed_action": "One of the allowed actions above",
+  "action_parameters": {{ "discount_percent": 25 }} or {{ "promo_code": "RETENTION_15" }} or null,
+  "confidence": 0.85,  // A float value between 0.0 and 1.0
+  "evidence": ["CART_ABANDONMENT_HIGH_VALUE"],  // List of string evidence codes
+  "reason_summary": "Short explanation detailing the customer growth strategy decision",
+  "financial_impact": "LOW",  // One of LOW, MEDIUM, HIGH, CRITICAL
+  "customer_impact": "LOW"    // One of LOW, MEDIUM, HIGH, CRITICAL
+}}
+
+[CONTEXT]
+- Customer Profile:
+  - ID: {customer.id}
+  - External ID: {customer.external_customer_id}
+  - Name: {customer.full_name}
+  - Risk Category: {customer.risk_profile.value}
+- Merchant:
+  - ID: {merchant.id}
+  - Name: {merchant.name}
+- Customer Transaction History at this Merchant:
+  - Total transactions count: {len(history)}
+  - Details of transactions: {[(t.occurred_at, t.amount, t.status.value) for t in history]}
+"""
+
+        allowed_actions = ["SEND_PROMOTION", "APPLY_DISCOUNT", "OFFER_UPSELL", "NO_ACTION"]
+
+        # Call Gemini Reasoning Layer
+        provider = LLMProvider()
+        output = provider.generate_structured_output(prompt, allowed_actions)
+
+        # Get DB Agent record
         agent = db.query(Agent).filter(Agent.agent_key == self.agent_key).first()
         if not agent:
             raise ValueError(f"Agent with key '{self.agent_key}' not found in database.")
@@ -77,12 +83,12 @@ class GrowthAgent(BaseAgent):
             merchant_id=m_id,
             event_type=event_type,
             event_id=event_id,
-            action=action,
-            action_parameters=action_parameters,
-            confidence=confidence,
-            financial_impact=financial_impact,
-            customer_impact=customer_impact,
-            evidence=evidence,
-            reason_summary=reason_summary,
+            action=output["proposed_action"],
+            action_parameters=output["action_parameters"],
+            confidence=Decimal(str(output["confidence"])),
+            financial_impact=output["financial_impact"],
+            customer_impact=output["customer_impact"],
+            evidence=output["evidence"],
+            reason_summary=output["reason_summary"],
             status=ProposalStatus.PENDING
         )

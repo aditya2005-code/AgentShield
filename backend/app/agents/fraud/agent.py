@@ -3,9 +3,10 @@ import uuid
 from sqlalchemy.orm import Session
 from app.agents.base import BaseAgent
 from app.agents.fraud.context import gather_fraud_context
+from app.llm.provider import LLMProvider
 from app.database.models.agent import Agent
 from app.database.models.agent_proposal import AgentProposal
-from app.database.models.enums import ImpactLevel, ProposalStatus
+from app.database.models.enums import ProposalStatus
 
 class FraudAgent(BaseAgent):
     @property
@@ -32,59 +33,56 @@ class FraudAgent(BaseAgent):
         device = context.device
         history = context.customer_history
 
-        evidence = []
-        
-        # 1. New or untrusted device check
-        if device is None or not device.is_trusted:
-            evidence.append("NEW_DEVICE")
-
-        # 2. Unusual location check
-        # Compare with the location of the customer's previous successful transactions
+        # Extract locations of previous successful transactions
         successful_locations = {t.location for t in history if t.status.value == "SUCCESS"}
-        if successful_locations and tx.location not in successful_locations:
-            evidence.append("UNUSUAL_LOCATION")
-        elif not successful_locations and history:
-            # If they have transaction history but no successful ones, location is unconfirmed
-            evidence.append("UNUSUAL_LOCATION")
 
-        # 3. High transaction velocity check
-        # Check for another transaction by the same customer within 48 hours
-        if history:
-            time_diffs = [abs((tx.occurred_at - t.occurred_at).total_seconds()) for t in history]
-            min_diff = min(time_diffs) if time_diffs else None
-            if min_diff is not None and min_diff < 48 * 3600:
-                evidence.append("HIGH_TRANSACTION_VELOCITY")
+        # Construct context prompt for Gemini
+        prompt = f"""
+You are the Fraud Detection Agent of AgentShield, a real-time risk assessment engine.
+Your task is to analyze the transaction context below and propose a fraud-related action.
 
-        # 4. High transaction amount check
-        if tx.amount >= Decimal("50000.00"):
-            evidence.append("HIGH_TRANSACTION_AMOUNT")
+[CRITICAL INSTRUCTIONS]
+1. Use ONLY the provided context. Do NOT assume, extrapolate, or invent facts.
+2. Provide specific evidence codes based on anomalous signals in the context (e.g., NEW_DEVICE, UNUSUAL_LOCATION, HIGH_TRANSACTION_VELOCITY, HIGH_TRANSACTION_AMOUNT).
+3. You must output ONLY a valid JSON object matching the schema below. No explanation, markdown formatting, or surrounding text.
+4. Allowed actions: ALLOW_TRANSACTION, STEP_UP_VERIFICATION, BLOCK_TRANSACTION, ESCALATE_TO_REVIEW.
 
-        # Propose Action based on heuristic rules
-        if "NEW_DEVICE" in evidence and "UNUSUAL_LOCATION" in evidence:
-            action = "STEP_UP_VERIFICATION"
-            confidence = Decimal("0.8800")
-            financial_impact = ImpactLevel.MEDIUM
-            customer_impact = ImpactLevel.MEDIUM
-            reason_summary = f"Kabir Singh transaction occurred at anomalous location ({tx.location}) using untrusted device."
-        elif "NEW_DEVICE" in evidence and "HIGH_TRANSACTION_AMOUNT" in evidence:
-            action = "BLOCK_TRANSACTION"
-            confidence = Decimal("0.9200")
-            financial_impact = ImpactLevel.HIGH
-            customer_impact = ImpactLevel.HIGH
-            reason_summary = f"High risk transaction of {tx.amount} {tx.currency} proposed from untrusted device."
-        elif len(evidence) > 0:
-            action = "ESCALATE_TO_REVIEW"
-            confidence = Decimal("0.7500")
-            financial_impact = ImpactLevel.MEDIUM
-            customer_impact = ImpactLevel.LOW
-            reason_summary = f"Transaction flagged with risk signals: {', '.join(evidence)}. Escalated to manual review."
-        else:
-            action = "ALLOW_TRANSACTION"
-            confidence = Decimal("0.9500")
-            financial_impact = ImpactLevel.LOW
-            customer_impact = ImpactLevel.LOW
-            reason_summary = "No anomalous risk signals detected. Allowing transaction."
+[REQUIRED JSON SCHEMA]
+{{
+  "proposed_action": "One of the allowed actions above",
+  "action_parameters": null,
+  "confidence": 0.88,  // A float value between 0.0 and 1.0
+  "evidence": ["NEW_DEVICE", "UNUSUAL_LOCATION"],  // List of string evidence codes
+  "reason_summary": "Short explanation detailing the anomalous indicators",
+  "financial_impact": "LOW",  // One of LOW, MEDIUM, HIGH, CRITICAL
+  "customer_impact": "LOW"    // One of LOW, MEDIUM, HIGH, CRITICAL
+}}
 
+[CONTEXT]
+- Transaction details:
+  - ID: {tx.id}
+  - Amount: {tx.amount} {tx.currency}
+  - Payment Method: {tx.payment_method}
+  - Location: {tx.location}
+  - Time: {tx.occurred_at}
+- Customer Profile:
+  - Name: {customer.full_name}
+  - Risk Category: {customer.risk_profile.value}
+- Device Profile:
+  - Trust level: {"Trusted" if (device and device.is_trusted) else "Untrusted/New Device"}
+- Customer Location History:
+  - Successful locations in history: {list(successful_locations)}
+- Transaction Velocity:
+  - Recent transactions by customer: {[(t.occurred_at, t.amount, t.location) for t in history]}
+"""
+
+        allowed_actions = ["ALLOW_TRANSACTION", "STEP_UP_VERIFICATION", "BLOCK_TRANSACTION", "ESCALATE_TO_REVIEW"]
+
+        # Call Gemini Reasoning Layer
+        provider = LLMProvider()
+        output = provider.generate_structured_output(prompt, allowed_actions)
+
+        # Get DB Agent record
         agent = db.query(Agent).filter(Agent.agent_key == self.agent_key).first()
         if not agent:
             raise ValueError(f"Agent with key '{self.agent_key}' not found in database.")
@@ -94,12 +92,12 @@ class FraudAgent(BaseAgent):
             merchant_id=tx.merchant_id,
             event_type=event_type,
             event_id=event_id,
-            action=action,
-            action_parameters=None,
-            confidence=confidence,
-            financial_impact=financial_impact,
-            customer_impact=customer_impact,
-            evidence=evidence,
-            reason_summary=reason_summary,
+            action=output["proposed_action"],
+            action_parameters=output["action_parameters"],
+            confidence=Decimal(str(output["confidence"])),
+            financial_impact=output["financial_impact"],
+            customer_impact=output["customer_impact"],
+            evidence=output["evidence"],
+            reason_summary=output["reason_summary"],
             status=ProposalStatus.PENDING
         )

@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     FRONTEND_URL: Optional[str] = None
     LLM_API_KEY: Optional[str] = None
 
+    # Gemini configuration
+    GEMINI_API_KEY: Optional[str] = None
+    GEMINI_MODEL: str = "gemini-2.5-flash"
+
     @field_validator("DATABASE_URL")
     @classmethod
     def validate_database_url(cls, v: str) -> str:
