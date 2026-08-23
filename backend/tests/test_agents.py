@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+from unittest.mock import patch
 from decimal import Decimal
 from app.main import app
 from app.database.session import SessionLocal
@@ -11,7 +12,18 @@ from app.database.models.enums import TransactionStatus, ProposalStatus, AuditEv
 
 client = TestClient(app)
 
-def test_fraud_agent_untrusted_device_and_location():
+@patch("app.llm.provider.LLMProvider.generate_structured_output")
+def test_fraud_agent_untrusted_device_and_location(mock_gen):
+    mock_gen.return_value = {
+        "proposed_action": "STEP_UP_VERIFICATION",
+        "action_parameters": None,
+        "confidence": 0.88,
+        "evidence": ["NEW_DEVICE", "UNUSUAL_LOCATION", "HIGH_TRANSACTION_VELOCITY"],
+        "reason_summary": "Kabir Singh transaction occurred at anomalous location (Moscow, Russia) using untrusted device.",
+        "financial_impact": "MEDIUM",
+        "customer_impact": "MEDIUM"
+    }
+
     db = SessionLocal()
     prop_id = None
     try:
@@ -19,7 +31,7 @@ def test_fraud_agent_untrusted_device_and_location():
         tx = db.query(Transaction).filter(Transaction.external_transaction_id == "tx_vc_304").first()
         assert tx is not None
 
-        # Clean up any existing pending proposals for this transaction to prevent idempotency match
+        # Clean up any existing pending proposals for this transaction
         db.query(AuditLog).filter(AuditLog.proposal_id.in_(
             db.query(AgentProposal.id).filter(AgentProposal.event_id == str(tx.id), AgentProposal.status == ProposalStatus.PENDING)
         )).delete(synchronize_session=False)
@@ -56,14 +68,25 @@ def test_fraud_agent_untrusted_device_and_location():
             db.commit()
         db.close()
 
-def test_fraud_agent_clean_transaction():
+@patch("app.llm.provider.LLMProvider.generate_structured_output")
+def test_fraud_agent_clean_transaction(mock_gen):
+    mock_gen.return_value = {
+        "proposed_action": "ALLOW_TRANSACTION",
+        "action_parameters": None,
+        "confidence": 0.95,
+        "evidence": [],
+        "reason_summary": "No anomalous risk signals detected. Allowing transaction.",
+        "financial_impact": "LOW",
+        "customer_impact": "LOW"
+    }
+
     db = SessionLocal()
     prop_id = None
     try:
         tx = db.query(Transaction).filter(Transaction.external_transaction_id == "tx_vc_101").first()
         assert tx is not None
 
-        # Clean up any existing pending proposals for this transaction to prevent idempotency match
+        # Clean up any existing pending proposals for this transaction
         db.query(AuditLog).filter(AuditLog.proposal_id.in_(
             db.query(AgentProposal.id).filter(AgentProposal.event_id == str(tx.id), AgentProposal.status == ProposalStatus.PENDING)
         )).delete(synchronize_session=False)
@@ -86,7 +109,18 @@ def test_fraud_agent_clean_transaction():
             db.commit()
         db.close()
 
-def test_recovery_agent_failed_transaction():
+@patch("app.llm.provider.LLMProvider.generate_structured_output")
+def test_recovery_agent_failed_transaction(mock_gen):
+    mock_gen.return_value = {
+        "proposed_action": "WAIT_AND_RETRY",
+        "action_parameters": {"wait_hours": 24},
+        "confidence": 0.82,
+        "evidence": ["CARD_DECLINED_INSUFFICIENT_FUNDS"],
+        "reason_summary": "Credit Card declined for insufficient funds. Proposing temporary wait and retry sequence.",
+        "financial_impact": "LOW",
+        "customer_impact": "LOW"
+    }
+
     db = SessionLocal()
     prop_id = None
     try:
@@ -119,7 +153,18 @@ def test_recovery_agent_failed_transaction():
             db.commit()
         db.close()
 
-def test_growth_agent_discount_scenario():
+@patch("app.llm.provider.LLMProvider.generate_structured_output")
+def test_growth_agent_discount_scenario(mock_gen):
+    mock_gen.return_value = {
+        "proposed_action": "APPLY_DISCOUNT",
+        "action_parameters": {"discount_percent": 25},
+        "confidence": 0.85,
+        "evidence": ["CART_ABANDONMENT_HIGH_VALUE"],
+        "reason_summary": "High-value cart abandoned by customer. Proposing 25% recovery discount promotion.",
+        "financial_impact": "MEDIUM",
+        "customer_impact": "LOW"
+    }
+
     db = SessionLocal()
     prop_id = None
     try:
@@ -129,7 +174,7 @@ def test_growth_agent_discount_scenario():
         sf = db.query(Merchant).filter(Merchant.slug == "scribeflow-premium").first()
         assert sf is not None
 
-        # Clean up any existing pending proposals for this customer to prevent idempotency match
+        # Clean up any existing pending proposals for this customer
         db.query(AuditLog).filter(AuditLog.proposal_id.in_(
             db.query(AgentProposal.id).filter(AgentProposal.event_id == str(customer.id), AgentProposal.status == ProposalStatus.PENDING)
         )).delete(synchronize_session=False)
@@ -156,7 +201,18 @@ def test_growth_agent_discount_scenario():
             db.commit()
         db.close()
 
-def test_idempotency_prevention():
+@patch("app.llm.provider.LLMProvider.generate_structured_output")
+def test_idempotency_prevention(mock_gen):
+    mock_gen.return_value = {
+        "proposed_action": "STEP_UP_VERIFICATION",
+        "action_parameters": None,
+        "confidence": 0.88,
+        "evidence": ["NEW_DEVICE", "UNUSUAL_LOCATION"],
+        "reason_summary": "Suspicious transaction context.",
+        "financial_impact": "MEDIUM",
+        "customer_impact": "MEDIUM"
+    }
+
     db = SessionLocal()
     prop_id = None
     try:
@@ -217,5 +273,43 @@ def test_validation_errors():
         })
         assert response.status_code == 422
         assert "does not belong to the specified merchant" in response.json()["detail"]
+    finally:
+        db.close()
+
+@patch("app.llm.provider.LLMProvider.generate_structured_output")
+def test_validation_errors_gemini_failure(mock_gen):
+    # Simulate a validation failure, timeout, or structure error from Gemini
+    mock_gen.side_effect = ValueError("Gemini returned invalid action code")
+
+    db = SessionLocal()
+    try:
+        tx = db.query(Transaction).filter(Transaction.external_transaction_id == "tx_vc_304").first()
+        assert tx is not None
+
+        # Clean up any existing pending proposals for this transaction to verify no partial write
+        db.query(AuditLog).filter(AuditLog.proposal_id.in_(
+            db.query(AgentProposal.id).filter(AgentProposal.event_id == str(tx.id), AgentProposal.status == ProposalStatus.PENDING)
+        )).delete(synchronize_session=False)
+        db.query(AgentProposal).filter(AgentProposal.event_id == str(tx.id), AgentProposal.status == ProposalStatus.PENDING).delete(synchronize_session=False)
+        db.commit()
+
+        # Count audit logs before
+        count_before = db.query(AuditLog).count()
+
+        # Call endpoint - should return controlled 422 error
+        response = client.post("/api/v1/agents/fraud/execute", json={"transaction_id": str(tx.id)})
+        assert response.status_code == 422
+        assert "Gemini returned invalid action code" in response.json()["detail"]
+
+        # Assert no new pending proposal was persisted
+        props = db.query(AgentProposal).filter(
+            AgentProposal.event_id == str(tx.id),
+            AgentProposal.status == ProposalStatus.PENDING
+        ).all()
+        assert len(props) == 0
+
+        # Assert no new audit log was generated
+        count_after = db.query(AuditLog).count()
+        assert count_after == count_before
     finally:
         db.close()
