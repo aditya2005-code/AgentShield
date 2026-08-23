@@ -17,8 +17,12 @@ def get_scenario_by_type(db: Session, scenario_type: str) -> Optional[Dict[str, 
     if not agent:
         return None
         
-    # 2. Fetch Proposal for this agent
-    proposal = db.query(AgentProposal).filter(AgentProposal.agent_id == agent.id).order_by(AgentProposal.created_at.desc()).first()
+    # 2. Fetch Proposal for this agent that is in REVIEWED status (seeded scenarios)
+    from app.database.models.enums import ProposalStatus
+    proposal = db.query(AgentProposal).filter(
+        AgentProposal.agent_id == agent.id,
+        AgentProposal.status == ProposalStatus.REVIEWED
+    ).order_by(AgentProposal.created_at.desc()).first()
     if not proposal:
         return None
 
