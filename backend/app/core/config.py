@@ -25,7 +25,10 @@ class Settings(BaseSettings):
 
     # Gemini configuration
     GEMINI_API_KEY: Optional[str] = None
-    GEMINI_MODEL: str = "gemini-2.5-flash"
+    GEMINI_MODEL: str = "gemini-3.6-flash"
+    GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
+    GEMINI_EMBEDDING_DIM: int = 768  # dimension for gemini-embedding-001
+
 
     @field_validator("DATABASE_URL")
     @classmethod

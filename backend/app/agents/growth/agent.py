@@ -31,6 +31,25 @@ class GrowthAgent(BaseAgent):
         merchant = context.merchant
         history = context.customer_history
 
+        # RAG - retrieve relevant policies for this merchant & growth incentive context
+        from app.rag.retrieval import retrieve_relevant_policies_sync
+        
+        query_text = f"Growth opportunity: customer with risk category {customer.risk_profile.value} at merchant {merchant.name} with transaction history count {len(history)}"
+        retrieved_policies = retrieve_relevant_policies_sync(db, merchant.id, query_text, limit=3)
+        
+        policies_context = ""
+        if retrieved_policies:
+            policies_context += "\n- Retrieved Merchant Policies (RAG Context):\n"
+            for i, p in enumerate(retrieved_policies, 1):
+                policies_context += f"  {i}. {p.policy_name} (Key: {p.policy_key}):\n"
+                policies_context += f"     Description: {p.description or 'None'}\n"
+                policies_context += f"     Similarity Score: {p.similarity_score:.4f}\n"
+                policies_context += f"     Rules:\n"
+                indented_content = "\n".join(f"       {line}" for line in p.document_content.splitlines())
+                policies_context += f"{indented_content}\n"
+        else:
+            policies_context += "\n- Retrieved Merchant Policies: None configured.\n"
+
         # Construct context prompt for Gemini
         prompt = f"""
 You are the Growth Incentives Agent of AgentShield.
@@ -41,6 +60,7 @@ Your task is to analyze the customer shopping history and behavior at this merch
 2. Formulate promotions or discounts based on behavior (e.g., offer VIP upsell for high average spend, discount code for abandoned carts or dormancy).
 3. You must output ONLY a valid JSON object matching the schema below. No explanation, markdown formatting, or surrounding text.
 4. Allowed actions: SEND_PROMOTION, APPLY_DISCOUNT, OFFER_UPSELL, NO_ACTION.
+5. Align your proposal rules (e.g., discount rates, loyalty triggers, promotion codes) with the retrieved merchant policies where applicable.
 
 [REQUIRED JSON SCHEMA]
 {{
@@ -65,6 +85,7 @@ Your task is to analyze the customer shopping history and behavior at this merch
 - Customer Transaction History at this Merchant:
   - Total transactions count: {len(history)}
   - Details of transactions: {[(t.occurred_at, t.amount, t.status.value) for t in history]}
+{policies_context}
 """
 
         allowed_actions = ["SEND_PROMOTION", "APPLY_DISCOUNT", "OFFER_UPSELL", "NO_ACTION"]

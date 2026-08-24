@@ -1,6 +1,6 @@
 from app.database.models.enums import (
-    MerchantStatus, 
-    RiskProfile, 
+    MerchantStatus,
+    RiskProfile,
     TransactionStatus,
     AgentType,
     AgentStatus,
@@ -8,8 +8,10 @@ from app.database.models.enums import (
     ImpactLevel,
     ShieldDecisionType,
     ShieldCheckStatus,
-    AuditEventType
+    AuditEventType,
 )
+
+from app.database.models.policy_embedding import PolicyEmbedding
 from app.database.models.merchant import Merchant
 from app.database.models.customer import Customer
 from app.database.models.device import Device
@@ -41,5 +43,6 @@ __all__ = [
     "ShieldDecision",
     "MerchantPolicy",
     "AgentPermission",
+    "PolicyEmbedding",
     "AuditLog",
 ]
