@@ -313,3 +313,143 @@ def test_validation_errors_gemini_failure(mock_gen):
         assert count_after == count_before
     finally:
         db.close()
+
+
+@patch("app.llm.provider.LLMProvider.generate_structured_output")
+@patch("app.ml.inference.service.FraudPredictionService.predict_transaction")
+def test_fraud_agent_ml_integration_high_risk(mock_predict, mock_gen):
+    """Test that Fraud Agent queries prediction service, passes correct features, and propagates HIGH risk."""
+    from app.ml.inference.service import FraudPredictionResult
+    from app.ml.inference.risk_classifier import FraudRiskLevel
+    
+    mock_predict.return_value = FraudPredictionResult(
+        fraud_probability=0.87,
+        probability=0.87,
+        risk_level=FraudRiskLevel.HIGH,
+        is_fraud=True,
+        threshold=0.25,
+        model_version="1.0.0",
+        model_name="HistGradientBoostingClassifier"
+    )
+    
+    mock_gen.return_value = {
+        "proposed_action": "BLOCK_TRANSACTION",
+        "action_parameters": None,
+        "confidence": 0.95,
+        "evidence": ["HIGH_ML_FRAUD_RISK", "UNUSUAL_LOCATION"],
+        "reason_summary": "Transaction flagged with high ML risk score.",
+        "financial_impact": "MEDIUM",
+        "customer_impact": "LOW"
+    }
+
+    db = SessionLocal()
+    try:
+        tx = db.query(Transaction).filter(Transaction.external_transaction_id == "tx_vc_304").first()
+        assert tx is not None
+        
+        from app.agents.fraud.agent import FraudAgent
+        agent = FraudAgent()
+        proposal = agent.execute("TRANSACTION", str(tx.id), str(tx.merchant_id), db)
+        
+        mock_predict.assert_called_once()
+        passed_features = mock_predict.call_args[0][0]
+        assert passed_features["Amount"] == 120000.0
+        assert passed_features["Merchant_Category"] == "Electronics"
+        assert passed_features["Device_Type"] == "Web_Browser"
+        assert passed_features["Distance_from_Home"] == 4.8088
+        assert passed_features["IP_Risk_Score"] == 0.85
+        assert passed_features["Avg_Spending_Habit"] == 55000.0
+        
+        prompt_passed = mock_gen.call_args[0][0]
+        assert "[FRAUD ML EVIDENCE]" in prompt_passed
+        assert "Fraud probability: 0.8700" in prompt_passed
+        assert "Fraud risk level: HIGH" in prompt_passed
+        assert "Do not alter, override, or recalculate the probability" in prompt_passed
+
+        assert proposal.action_parameters["fraud_probability"] == 0.87
+        assert proposal.action_parameters["fraud_risk_level"] == "HIGH"
+        assert proposal.action_parameters["ml_model_version"] == "1.0.0"
+        
+    finally:
+        db.close()
+
+
+@patch("app.llm.provider.LLMProvider.generate_structured_output")
+@patch("app.ml.inference.service.FraudPredictionService.predict_transaction")
+def test_fraud_agent_ml_integration_low_risk(mock_predict, mock_gen):
+    """Test that Fraud Agent correctly handles and injects LOW risk prediction."""
+    from app.ml.inference.service import FraudPredictionResult
+    from app.ml.inference.risk_classifier import FraudRiskLevel
+    
+    mock_predict.return_value = FraudPredictionResult(
+        fraud_probability=0.02,
+        probability=0.02,
+        risk_level=FraudRiskLevel.LOW,
+        is_fraud=False,
+        threshold=0.25,
+        model_version="1.0.0",
+        model_name="HistGradientBoostingClassifier"
+    )
+    
+    mock_gen.return_value = {
+        "proposed_action": "ALLOW_TRANSACTION",
+        "action_parameters": None,
+        "confidence": 0.99,
+        "evidence": [],
+        "reason_summary": "Transaction looks clean.",
+        "financial_impact": "LOW",
+        "customer_impact": "LOW"
+    }
+
+    db = SessionLocal()
+    try:
+        tx = db.query(Transaction).filter(Transaction.external_transaction_id == "tx_vc_103").first()
+        
+        from app.agents.fraud.agent import FraudAgent
+        agent = FraudAgent()
+        proposal = agent.execute("TRANSACTION", str(tx.id), str(tx.merchant_id), db)
+        
+        prompt_passed = mock_gen.call_args[0][0]
+        assert "[FRAUD ML EVIDENCE]" in prompt_passed
+        assert "Fraud probability: 0.0200" in prompt_passed
+        assert "Fraud risk level: LOW" in prompt_passed
+        assert "Model classification: CLEAN" in prompt_passed
+
+        assert proposal.action_parameters["fraud_probability"] == 0.02
+        assert proposal.action_parameters["fraud_risk_level"] == "LOW"
+        
+    finally:
+        db.close()
+
+
+@patch("app.llm.provider.LLMProvider.generate_structured_output")
+@patch("app.ml.inference.service.FraudPredictionService.predict_transaction")
+def test_fraud_agent_ml_degraded_mode(mock_predict, mock_gen):
+    """Test that Fraud Agent executes in degraded mode when service prediction fails."""
+    mock_predict.side_effect = Exception("Prediction service crash")
+    
+    mock_gen.return_value = {
+        "proposed_action": "ALLOW_TRANSACTION",
+        "action_parameters": None,
+        "confidence": 0.88,
+        "evidence": [],
+        "reason_summary": "Degraded mode reasoning",
+        "financial_impact": "LOW",
+        "customer_impact": "LOW"
+    }
+
+    db = SessionLocal()
+    try:
+        tx = db.query(Transaction).filter(Transaction.external_transaction_id == "tx_vc_101").first()
+        
+        from app.agents.fraud.agent import FraudAgent
+        agent = FraudAgent()
+        proposal = agent.execute("TRANSACTION", str(tx.id), str(tx.merchant_id), db)
+        
+        prompt_passed = mock_gen.call_args[0][0]
+        assert "ML fraud prediction signal is currently UNAVAILABLE" in prompt_passed
+        assert proposal.action_parameters["ml_signal_available"] is False
+        
+    finally:
+        db.close()
+
