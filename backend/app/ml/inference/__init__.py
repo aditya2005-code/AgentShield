@@ -6,6 +6,7 @@ from app.ml.inference.exceptions import (
 )
 from app.ml.inference.predictor import FraudPredictor, get_fraud_predictor
 from app.ml.inference.service import FraudPredictionService, FraudPredictionResult
+from app.ml.inference.risk_classifier import FraudRiskLevel
 
 __all__ = [
     "FraudInferenceError",
@@ -16,4 +17,5 @@ __all__ = [
     "get_fraud_predictor",
     "FraudPredictionService",
     "FraudPredictionResult",
+    "FraudRiskLevel",
 ]

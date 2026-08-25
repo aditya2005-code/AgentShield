@@ -10,7 +10,11 @@
         "positive_class": "fraud",
         "probability_method": "predict_proba",
         "probability_index": 1,
-        "fraud_classification_threshold": 0.25
+        "fraud_classification_threshold": 0.25,
+        "risk_thresholds": {
+            "medium": 0.40,
+            "high": 0.70
+        }
     },
     "test_performance": {
         "accuracy": 0.997333,

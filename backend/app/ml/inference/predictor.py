@@ -40,6 +40,7 @@ class FraudPredictor:
         self._model = None
         self._preprocessor = None
         self._metadata = None
+        self._risk_classifier = None
         self._is_loaded = False
         self._load_lock = threading.Lock()
         self._positive_class_index = 1
@@ -138,11 +139,23 @@ class FraudPredictor:
             else:
                 self._positive_class_index = self._metadata.get("prediction", {}).get("probability_index", 1)
 
+            # Validate classification threshold
+            pred_sec = self._metadata.get("prediction", {})
+            thresh = pred_sec.get("fraud_classification_threshold", 0.25)
+            if not (0.0 <= thresh <= 1.0):
+                err_msg = f"Invalid fraud classification threshold: {thresh} is outside [0.0, 1.0]"
+                logger.error(err_msg)
+                raise FraudModelLoadError(err_msg)
+
+            # Load and validate risk classifier at startup
+            from app.ml.inference.risk_classifier import FraudRiskClassifier
+            self._risk_classifier = FraudRiskClassifier.from_metadata(pred_sec)
+
             self._is_loaded = True
             logger.info(
                 f"Fraud ML model loaded successfully. Model: {self._metadata['model_name']}, "
                 f"Version: {self._metadata['model_version']}, "
-                f"Threshold: {self._metadata['prediction'].get('fraud_classification_threshold', 0.25)}"
+                f"Threshold: {thresh}"
             )
 
     def is_loaded(self) -> bool:
@@ -154,6 +167,12 @@ class FraudPredictor:
         if not self._is_loaded:
             raise FraudModelLoadError("Model is not loaded. Call load() first.")
         return self._metadata
+
+    def get_risk_classifier(self):
+        """Returns the loaded and validated FraudRiskClassifier."""
+        if not self._is_loaded:
+            raise FraudModelLoadError("Model is not loaded. Call load() first.")
+        return self._risk_classifier
 
     def get_model_info(self) -> Dict[str, Any]:
         """Returns safe, clean public model information."""

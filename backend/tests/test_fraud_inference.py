@@ -230,3 +230,141 @@ def test_service_prediction_failure_controlled(mock_predictor_dependencies):
         service = FraudPredictionService()
         with pytest.raises(FraudModelPredictionError, match="Preprocessor transformation failed"):
             service.predict_transaction(MOCK_INPUT)
+
+
+from app.ml.inference.risk_classifier import FraudRiskClassifier, FraudRiskLevel
+
+def test_risk_classification_low_medium_high():
+    # medium threshold: 0.40, high threshold: 0.70
+    classifier = FraudRiskClassifier(medium_threshold=0.40, high_threshold=0.70)
+    
+    # 1. LOW risk classification
+    assert classifier.classify(0.10) == FraudRiskLevel.LOW
+    assert classifier.classify(0.39) == FraudRiskLevel.LOW
+    
+    # 2. MEDIUM risk classification
+    assert classifier.classify(0.45) == FraudRiskLevel.MEDIUM
+    assert classifier.classify(0.69) == FraudRiskLevel.MEDIUM
+    
+    # 3. HIGH risk classification
+    assert classifier.classify(0.75) == FraudRiskLevel.HIGH
+    assert classifier.classify(1.0) == FraudRiskLevel.HIGH
+    
+    # 4. Probability exactly at medium threshold
+    assert classifier.classify(0.40) == FraudRiskLevel.MEDIUM
+    
+    # 5. Probability exactly at high threshold
+    assert classifier.classify(0.70) == FraudRiskLevel.HIGH
+
+
+def test_service_probability_boundary_checks(mock_predictor_dependencies):
+    """Test probability mapping against binary fraud threshold and independence from risk levels."""
+    mock_model, mock_preprocessor = mock_predictor_dependencies
+    
+    # Threshold in MOCK_METADATA is 0.35, risk medium is 0.40 (fallback), high is 0.70 (fallback)
+    local_predictor = FraudPredictor()
+    local_predictor.load()
+    
+    with patch("app.ml.inference.service.get_fraud_predictor", return_value=local_predictor):
+        service = FraudPredictionService()
+        
+        # 6. Probability exactly at fraud classification threshold (0.35)
+        # is_fraud should be True, risk should be LOW (0.35 < 0.40)
+        mock_model.predict_proba.return_value = np.array([[0.65, 0.35]])
+        res = service.predict_transaction(MOCK_INPUT)
+        assert res.is_fraud is True
+        assert res.risk_level == FraudRiskLevel.LOW
+        
+        # 7. Probability below fraud classification threshold (0.34)
+        # is_fraud should be False, risk should be LOW
+        mock_model.predict_proba.return_value = np.array([[0.66, 0.34]])
+        res = service.predict_transaction(MOCK_INPUT)
+        assert res.is_fraud is False
+        assert res.risk_level == FraudRiskLevel.LOW
+        
+        # 8. Probability above fraud classification threshold (0.36)
+        # is_fraud should be True, risk should be LOW
+        mock_model.predict_proba.return_value = np.array([[0.64, 0.36]])
+        res = service.predict_transaction(MOCK_INPUT)
+        assert res.is_fraud is True
+        assert res.risk_level == FraudRiskLevel.LOW
+
+        # 9. is_fraud is independent from risk_level:
+        # threshold is 0.35, medium threshold is 0.40
+        # 0.38 >= 0.35 (is_fraud=True), but 0.38 < 0.40 (risk_level=LOW)
+        mock_model.predict_proba.return_value = np.array([[0.62, 0.38]])
+        res = service.predict_transaction(MOCK_INPUT)
+        assert res.is_fraud is True
+        assert res.risk_level == FraudRiskLevel.LOW
+
+        # prob=0.50: is_fraud=True, risk_level=MEDIUM
+        mock_model.predict_proba.return_value = np.array([[0.50, 0.50]])
+        res = service.predict_transaction(MOCK_INPUT)
+        assert res.is_fraud is True
+        assert res.risk_level == FraudRiskLevel.MEDIUM
+
+
+def test_service_probability_invalid_values(mock_predictor_dependencies):
+    """Test that invalid float probability values raise FraudModelPredictionError."""
+    mock_model, mock_preprocessor = mock_predictor_dependencies
+    local_predictor = FraudPredictor()
+    local_predictor.load()
+    
+    with patch("app.ml.inference.service.get_fraud_predictor", return_value=local_predictor):
+        service = FraudPredictionService()
+        
+        # 10. Invalid NaN probability raises controlled error
+        mock_model.predict_proba.return_value = np.array([[0.5, float("nan")]])
+        with pytest.raises(FraudModelPredictionError, match="Invalid prediction probability"):
+            service.predict_transaction(MOCK_INPUT)
+            
+        # 11. Invalid infinite probability raises controlled error
+        mock_model.predict_proba.return_value = np.array([[0.5, float("inf")]])
+        with pytest.raises(FraudModelPredictionError, match="Invalid prediction probability"):
+            service.predict_transaction(MOCK_INPUT)
+            
+        # 12. Negative probability raises controlled error
+        mock_model.predict_proba.return_value = np.array([[1.5, -0.5]])
+        with pytest.raises(FraudModelPredictionError, match="Invalid prediction probability"):
+            service.predict_transaction(MOCK_INPUT)
+            
+        # 13. Probability > 1.0 raises controlled error
+        mock_model.predict_proba.return_value = np.array([[-0.5, 1.5]])
+        with pytest.raises(FraudModelPredictionError, match="Invalid prediction probability"):
+            service.predict_transaction(MOCK_INPUT)
+
+
+def test_risk_threshold_validation_errors():
+    """Test that invalid risk thresholds raise FraudModelLoadError."""
+    # 14. Invalid risk threshold ordering (medium >= high) raises controlled error
+    with pytest.raises(FraudModelLoadError, match="must be strictly less than"):
+        FraudRiskClassifier(medium_threshold=0.60, high_threshold=0.50)
+        
+    with pytest.raises(FraudModelLoadError, match="must be strictly less than"):
+        FraudRiskClassifier(medium_threshold=0.50, high_threshold=0.50)
+        
+    # 15. Invalid risk threshold range (out of [0.0, 1.0]) raises controlled error
+    with pytest.raises(FraudModelLoadError, match="is outside"):
+        FraudRiskClassifier(medium_threshold=-0.1, high_threshold=0.5)
+        
+    with pytest.raises(FraudModelLoadError, match="is outside"):
+        FraudRiskClassifier(medium_threshold=0.5, high_threshold=1.1)
+
+
+def test_metadata_and_model_version_inclusion(mock_predictor_dependencies):
+    """Test that the prediction result correctly includes model version and name fields."""
+    mock_model, mock_preprocessor = mock_predictor_dependencies
+    local_predictor = FraudPredictor()
+    local_predictor.load()
+    
+    with patch("app.ml.inference.service.get_fraud_predictor", return_value=local_predictor):
+        service = FraudPredictionService()
+        
+        # 16. Model version and name are correctly included
+        res = service.predict_transaction(MOCK_INPUT)
+        assert res.model_version == "1.0.0-test"
+        assert res.model_name == "HistGradientBoostingClassifier"
+        assert res.fraud_probability == 0.2
+        assert res.probability == 0.2
+        assert res.threshold == 0.35
+
