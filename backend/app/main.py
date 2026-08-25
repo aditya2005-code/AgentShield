@@ -26,6 +26,8 @@ from app.api.proposals import router as proposals_router
 from app.api.decisions import router as decisions_router
 from app.api.audit_logs import router as audit_logs_router
 from app.api.demo import router as demo_router
+from app.api.agentshield import router as agentshield_router
+from app.api.rag import router as rag_router
 
 app.include_router(agents_router, prefix="/api/v1")
 app.include_router(merchants_router, prefix="/api/v1")
@@ -34,3 +36,5 @@ app.include_router(proposals_router, prefix="/api/v1")
 app.include_router(decisions_router, prefix="/api/v1")
 app.include_router(audit_logs_router, prefix="/api/v1")
 app.include_router(demo_router, prefix="/api/v1")
+app.include_router(agentshield_router, prefix="/api/v1")
+app.include_router(rag_router, prefix="/api/v1")

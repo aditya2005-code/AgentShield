@@ -35,6 +35,25 @@ class RecoveryAgent(BaseAgent):
         if tx.status not in (TransactionStatus.FAILED, TransactionStatus.BLOCKED):
             raise ValueError(f"Transaction with ID {event_id} has status '{tx.status.value}' and cannot be processed for recovery.")
 
+        # RAG - retrieve relevant policies for this merchant & transaction failure context
+        from app.rag.retrieval import retrieve_relevant_policies_sync
+        
+        query_text = f"Payment failure: {tx.payment_method} transaction of {tx.amount} {tx.currency} with status {tx.status.value}"
+        retrieved_policies = retrieve_relevant_policies_sync(db, tx.merchant_id, query_text, limit=3)
+        
+        policies_context = ""
+        if retrieved_policies:
+            policies_context += "\n- Retrieved Merchant Policies (RAG Context):\n"
+            for i, p in enumerate(retrieved_policies, 1):
+                policies_context += f"  {i}. {p.policy_name} (Key: {p.policy_key}):\n"
+                policies_context += f"     Description: {p.description or 'None'}\n"
+                policies_context += f"     Similarity Score: {p.similarity_score:.4f}\n"
+                policies_context += f"     Rules:\n"
+                indented_content = "\n".join(f"       {line}" for line in p.document_content.splitlines())
+                policies_context += f"{indented_content}\n"
+        else:
+            policies_context += "\n- Retrieved Merchant Policies: None configured.\n"
+
         # Construct context prompt for Gemini
         prompt = f"""
 You are the Payment Recovery Agent of AgentShield.
@@ -45,6 +64,7 @@ Your task is to analyze the failed transaction details and previous recovery att
 2. Propose actions sequentially based on the history of previous proposals (e.g., if there are no prior proposals, propose a WAIT_AND_RETRY; if prior retries exist, escalate to REQUEST_NEW_PAYMENT_METHOD or ESCALATE_TO_SUPPORT).
 3. You must output ONLY a valid JSON object matching the schema below. No explanation, markdown formatting, or surrounding text.
 4. Allowed actions: WAIT_AND_RETRY, REQUEST_NEW_PAYMENT_METHOD, ESCALATE_TO_SUPPORT, DO_NOT_RETRY.
+5. Align your proposal rules (e.g., maximum recovery attempts, wait duration, escalation triggers) with the retrieved merchant policies where applicable.
 
 [REQUIRED JSON SCHEMA]
 {{
@@ -68,6 +88,7 @@ Your task is to analyze the failed transaction details and previous recovery att
 - Previous Recovery Proposals for this Transaction (Retry History):
   - Count of previous attempts: {len(previous_proposals)}
   - Details: {[(p.action, p.created_at, p.status.value) for p in previous_proposals]}
+{policies_context}
 """
 
         allowed_actions = ["WAIT_AND_RETRY", "REQUEST_NEW_PAYMENT_METHOD", "ESCALATE_TO_SUPPORT", "DO_NOT_RETRY"]

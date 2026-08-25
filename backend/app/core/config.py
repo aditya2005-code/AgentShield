@@ -25,7 +25,43 @@ class Settings(BaseSettings):
 
     # Gemini configuration
     GEMINI_API_KEY: Optional[str] = None
-    GEMINI_MODEL: str = "gemini-2.5-flash"
+    GEMINI_MODEL: str = "gemini-3.6-flash"
+    GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
+    GEMINI_EMBEDDING_DIM: int = 768  # dimension for gemini-embedding-001
+
+    # ML Inference Configuration
+    FRAUD_MODEL_PATH: str = "ml/models/fraud_model.joblib"
+    FRAUD_PREPROCESSOR_PATH: str = "ml/models/preprocessor.joblib"
+    FRAUD_METADATA_PATH: str = "ml/metadata/model_metadata.json"
+
+    def resolve_ml_path(self, path_str: str) -> str:
+        """
+        Resolves a relative path to absolute by searching:
+        1. Workspace root (parent of backend folder)
+        2. Within backend folder
+        Returns absolute path string.
+        """
+        from pathlib import Path
+        p = Path(path_str)
+        if p.is_absolute():
+            return str(p)
+        
+        # Workspace root is parent of backend directory
+        # config.py is at backend/app/core/config.py, so parent of backend is 4 levels up
+        workspace_root = Path(__file__).resolve().parent.parent.parent.parent
+        p_workspace = workspace_root / p
+        if p_workspace.exists():
+            return str(p_workspace)
+            
+        # Try relative to backend folder
+        backend_root = Path(__file__).resolve().parent.parent.parent
+        p_backend = backend_root / p
+        if p_backend.exists():
+            return str(p_backend)
+            
+        # Fallback to workspace root resolution
+        return str(p_workspace)
+
 
     @field_validator("DATABASE_URL")
     @classmethod
