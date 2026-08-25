@@ -3,7 +3,7 @@ import math
 from pydantic import BaseModel, Field
 
 from app.ml.inference.predictor import get_fraud_predictor
-from app.ml.inference.exceptions import FraudModelPredictionError, FraudModelLoadError
+from app.ml.inference.exceptions import FraudModelPredictionError, FraudModelLoadError, FraudModelArtifactNotFoundError
 from app.ml.inference.risk_classifier import FraudRiskLevel
 
 logger = logging.getLogger(__name__)
@@ -100,6 +100,6 @@ class FraudPredictionService:
         except Exception as e:
             # Avoid exposing internal stack traces but log the failure details internally
             logger.error(f"Inference execution failed in service layer: {e}")
-            if isinstance(e, (FraudModelPredictionError, FraudModelLoadError, ValueError)):
+            if isinstance(e, (FraudModelPredictionError, FraudModelLoadError, FraudModelArtifactNotFoundError, ValueError)):
                 raise e
             raise FraudModelPredictionError(f"Prediction failed in service layer: {e}")
