@@ -1,7 +1,10 @@
 import uuid
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.database.session import get_db
+
+logger = logging.getLogger(__name__)
 from app.database.models.agent_proposal import AgentProposal
 from app.agentshield.service import evaluate_proposal
 from app.agentshield.schemas import EvaluateProposalResponse
@@ -103,7 +106,8 @@ def process_event_endpoint(payload: EventProcessingRequest, db: Session = Depend
             detail=str(e)
         )
     except Exception as e:
+        logger.error(f"Internal error processing event: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Event processing failed: {str(e)}"
+            detail="An internal error occurred while processing the event."
         )

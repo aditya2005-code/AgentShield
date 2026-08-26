@@ -10,6 +10,7 @@ from app.database.models.transaction import Transaction
 from app.database.models.customer import Customer
 from app.database.models.merchant import Merchant
 from app.database.models.agent import Agent
+from app.database.models.event_workflow import EventWorkflow
 from app.database.models.agent_proposal import AgentProposal
 from app.database.models.shield_decision import ShieldDecision
 from app.database.models.audit_log import AuditLog
@@ -33,6 +34,18 @@ def clean_db():
     db = SessionLocal()
     yield db
     db.close()
+
+def clean_event_data(db, event_id):
+    db.query(AuditLog).filter(AuditLog.proposal_id.in_(
+        db.query(AgentProposal.id).filter(AgentProposal.event_id == str(event_id))
+    )).delete(synchronize_session=False)
+    db.query(ShieldDecision).filter(ShieldDecision.proposal_id.in_(
+        db.query(AgentProposal.id).filter(AgentProposal.event_id == str(event_id))
+    )).delete(synchronize_session=False)
+    db.query(AgentProposal).filter(AgentProposal.event_id == str(event_id)).delete(synchronize_session=False)
+    db.query(EventWorkflow).filter(EventWorkflow.event_id == str(event_id)).delete(synchronize_session=False)
+    db.commit()
+
 
 @patch("app.llm.provider.LLMProvider.generate_structured_output")
 @patch("app.ml.inference.service.FraudPredictionService.predict_transaction")
@@ -69,6 +82,8 @@ def test_scenario_1_fraud_only(mock_predict, mock_gen, clean_db):
     tx.status = TransactionStatus.PENDING
     clean_db.commit()
 
+    clean_event_data(clean_db, tx.id)
+
     try:
         payload = {
             "event_type": "TRANSACTION",
@@ -87,12 +102,7 @@ def test_scenario_1_fraud_only(mock_predict, mock_gen, clean_db):
         assert data["final_decision"] == "APPROVE"
         
         # Cleanup
-        proposal_ids = [p["proposal_id"] for p in data["proposals"]]
-        for p_id in proposal_ids:
-            clean_db.query(AuditLog).filter(AuditLog.proposal_id == uuid.UUID(p_id)).delete()
-            clean_db.query(ShieldDecision).filter(ShieldDecision.proposal_id == uuid.UUID(p_id)).delete()
-            clean_db.query(AgentProposal).filter(AgentProposal.id == uuid.UUID(p_id)).delete()
-        clean_db.commit()
+        clean_event_data(clean_db, tx.id)
 
     finally:
         tx.status = original_status
@@ -124,6 +134,8 @@ def test_scenario_2_recovery(mock_retrieve, mock_gen, clean_db):
     tx = clean_db.query(Transaction).filter(Transaction.status == TransactionStatus.FAILED).first()
     assert tx is not None
 
+    clean_event_data(clean_db, tx.id)
+
     payload = {
         "event_type": "PAYMENT_FAILURE",
         "event_id": str(tx.id)
@@ -141,12 +153,7 @@ def test_scenario_2_recovery(mock_retrieve, mock_gen, clean_db):
     assert mock_retrieve.call_args[0][1] == tx.merchant_id
 
     # Cleanup
-    proposal_ids = [p["proposal_id"] for p in data["proposals"]]
-    for p_id in proposal_ids:
-        clean_db.query(AuditLog).filter(AuditLog.proposal_id == uuid.UUID(p_id)).delete()
-        clean_db.query(ShieldDecision).filter(ShieldDecision.proposal_id == uuid.UUID(p_id)).delete()
-        clean_db.query(AgentProposal).filter(AgentProposal.id == uuid.UUID(p_id)).delete()
-    clean_db.commit()
+    clean_event_data(clean_db, tx.id)
 
 
 @patch("app.llm.provider.LLMProvider.generate_structured_output")
@@ -173,6 +180,8 @@ def test_scenario_3_growth(mock_retrieve, mock_gen, clean_db):
     customer = clean_db.query(Customer).first()
     assert customer is not None
 
+    clean_event_data(clean_db, customer.id)
+
     payload = {
         "event_type": "GROWTH_OPPORTUNITY",
         "event_id": str(customer.id)
@@ -189,12 +198,7 @@ def test_scenario_3_growth(mock_retrieve, mock_gen, clean_db):
     assert data["final_decision"] == "APPROVE"
 
     # Cleanup
-    proposal_ids = [p["proposal_id"] for p in data["proposals"]]
-    for p_id in proposal_ids:
-        clean_db.query(AuditLog).filter(AuditLog.proposal_id == uuid.UUID(p_id)).delete()
-        clean_db.query(ShieldDecision).filter(ShieldDecision.proposal_id == uuid.UUID(p_id)).delete()
-        clean_db.query(AgentProposal).filter(AgentProposal.id == uuid.UUID(p_id)).delete()
-    clean_db.commit()
+    clean_event_data(clean_db, customer.id)
 
 
 @patch("app.llm.provider.LLMProvider.generate_structured_output")
@@ -245,6 +249,8 @@ def test_scenario_4_multi_agent(mock_predict, mock_retrieve, mock_gen, clean_db)
     tx = clean_db.query(Transaction).filter(Transaction.status == TransactionStatus.FAILED).first()
     assert tx is not None
 
+    clean_event_data(clean_db, tx.id)
+
     payload = {
         "event_type": "TRANSACTION",
         "event_id": str(tx.id)
@@ -260,12 +266,7 @@ def test_scenario_4_multi_agent(mock_predict, mock_retrieve, mock_gen, clean_db)
     assert len(data["decision_details"]) == 2
 
     # Cleanup
-    proposal_ids = [p["proposal_id"] for p in data["proposals"]]
-    for p_id in proposal_ids:
-        clean_db.query(AuditLog).filter(AuditLog.proposal_id == uuid.UUID(p_id)).delete()
-        clean_db.query(ShieldDecision).filter(ShieldDecision.proposal_id == uuid.UUID(p_id)).delete()
-        clean_db.query(AgentProposal).filter(AgentProposal.id == uuid.UUID(p_id)).delete()
-    clean_db.commit()
+    clean_event_data(clean_db, tx.id)
 
 
 @patch("app.services.orchestration_service.orchestrate_agent")
@@ -278,6 +279,8 @@ def test_scenario_5_conflicting_proposals(mock_orchestrate, clean_db):
     r_agent = clean_db.query(Agent).filter(Agent.agent_type == AgentType.RECOVERY).first()
     merchant = clean_db.query(Merchant).first()
     tx = clean_db.query(Transaction).filter(Transaction.status == TransactionStatus.FAILED).first()
+
+    clean_event_data(clean_db, tx.id)
 
     # Fraud proposal (fresh ID, references real tx ID to allow loading context)
     p1 = AgentProposal(
@@ -332,10 +335,7 @@ def test_scenario_5_conflicting_proposals(mock_orchestrate, clean_db):
     assert data["final_decision"] in ("REJECT", "ESCALATE")
 
     # Cleanup
-    clean_db.query(AuditLog).filter(AuditLog.proposal_id.in_([p1.id, p2.id])).delete(synchronize_session=False)
-    clean_db.query(ShieldDecision).filter(ShieldDecision.proposal_id.in_([p1.id, p2.id])).delete(synchronize_session=False)
-    clean_db.query(AgentProposal).filter(AgentProposal.id.in_([p1.id, p2.id])).delete(synchronize_session=False)
-    clean_db.commit()
+    clean_event_data(clean_db, tx.id)
 
 
 @patch("app.services.orchestration_service.orchestrate_agent")
@@ -347,6 +347,8 @@ def test_scenario_6_single_agent_failure(mock_orchestrate, clean_db):
     r_agent = clean_db.query(Agent).filter(Agent.agent_type == AgentType.RECOVERY).first()
     merchant = clean_db.query(Merchant).first()
     tx = clean_db.query(Transaction).filter(Transaction.status == TransactionStatus.FAILED).first()
+
+    clean_event_data(clean_db, tx.id)
 
     p2 = AgentProposal(
         id=uuid.uuid4(),
@@ -382,10 +384,7 @@ def test_scenario_6_single_agent_failure(mock_orchestrate, clean_db):
     assert data["final_decision"] == "APPROVE"
 
     # Cleanup
-    clean_db.query(AuditLog).filter(AuditLog.proposal_id == p2.id).delete()
-    clean_db.query(ShieldDecision).filter(ShieldDecision.proposal_id == p2.id).delete()
-    clean_db.query(AgentProposal).filter(AgentProposal.id == p2.id).delete()
-    clean_db.commit()
+    clean_event_data(clean_db, tx.id)
 
 
 @patch("app.llm.provider.LLMProvider.generate_structured_output")
@@ -411,6 +410,9 @@ def test_scenario_7_tenant_isolation(mock_retrieve, mock_gen, clean_db):
     assert c1 is not None
     assert c2 is not None
 
+    clean_event_data(clean_db, c1.id)
+    clean_event_data(clean_db, c2.id)
+
     # Step 1: Evaluate c1
     response = client.post("/api/v1/agentshield/process-event", json={"event_type": "GROWTH_OPPORTUNITY", "event_id": str(c1.id)})
     assert response.status_code == 201
@@ -422,11 +424,5 @@ def test_scenario_7_tenant_isolation(mock_retrieve, mock_gen, clean_db):
     mock_retrieve.assert_called_with(ANY, c2.merchant_id, ANY, limit=ANY)
 
     # Cleanup
-    proposals_c1 = clean_db.query(AgentProposal).filter(AgentProposal.event_id == str(c1.id)).all()
-    proposals_c2 = clean_db.query(AgentProposal).filter(AgentProposal.event_id == str(c2.id)).all()
-    all_props = proposals_c1 + proposals_c2
-    for p in all_props:
-        clean_db.query(AuditLog).filter(AuditLog.proposal_id == p.id).delete()
-        clean_db.query(ShieldDecision).filter(ShieldDecision.proposal_id == p.id).delete()
-        clean_db.query(AgentProposal).filter(AgentProposal.id == p.id).delete()
-    clean_db.commit()
+    clean_event_data(clean_db, c1.id)
+    clean_event_data(clean_db, c2.id)

@@ -2,6 +2,7 @@ import logging
 import uuid
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from app.database.models.agent import Agent
 from app.database.models.agent_proposal import AgentProposal
@@ -10,6 +11,7 @@ from app.database.models.audit_log import AuditLog
 from app.database.models.transaction import Transaction
 from app.database.models.customer import Customer
 from app.database.models.merchant import Merchant
+from app.database.models.event_workflow import EventWorkflow
 from app.database.models.enums import AgentType, ProposalStatus, AuditEventType, TransactionStatus, ShieldDecisionType
 from app.agents.router import execute_agent
 from app.agentshield.service import evaluate_proposal
@@ -25,20 +27,21 @@ def orchestrate_agent(
 ) -> AgentProposal:
     """
     Executes a single agent, respecting idempotency constraints.
+    Reuses existing proposals (regardless of status) under retry/resume scenarios.
     """
     # 1. Load Agent
     agent = db.query(Agent).filter(Agent.agent_type == agent_type).first()
     if not agent:
         raise ValueError(f"Agent '{agent_type.value}' is not registered.")
 
-    # 2. Check Idempotency (Existing Pending Proposal)
+    # 2. Check Idempotency (Existing Proposal for event_id and agent_id)
     existing = db.query(AgentProposal).filter(
         AgentProposal.agent_id == agent.id,
         AgentProposal.event_type == event_type,
-        AgentProposal.event_id == event_id,
-        AgentProposal.status == ProposalStatus.PENDING
+        AgentProposal.event_id == event_id
     ).first()
     if existing:
+        logger.info(f"Reusing existing proposal '{existing.id}' for agent '{agent_type.value}' and event '{event_id}'.")
         return existing
 
     # 3. Dynamic execution
@@ -80,10 +83,10 @@ def process_event_orchestration(
     status = "COMPLETED"
     merchant_id: Optional[uuid.UUID] = None
 
-    # 1. Context Gathering & Applicable Agent Selection
+    # 1. Context Gathering & Applicable Agent Selection (Objective 1 Routing Validation)
     applicable_agents = []  # List of tuples (AgentType, event_type, event_id)
 
-    if event_type_norm in ("TRANSACTION", "PAYMENT_FAILURE"):
+    if event_type_norm == "TRANSACTION":
         try:
             tx_uuid = uuid.UUID(event_id)
         except ValueError:
@@ -95,16 +98,34 @@ def process_event_orchestration(
 
         merchant_id = tx.merchant_id
         
-        # Fraud Agent is always applicable to transaction events
+        # TRANSACTION: Always execute FraudAgent
         applicable_agents.append((AgentType.FRAUD, "TRANSACTION", event_id))
 
-        # Recovery Agent is applicable to payment failure status
-        if tx.status in (TransactionStatus.FAILED, TransactionStatus.BLOCKED) or event_type_norm == "PAYMENT_FAILURE":
+        # TRANSACTION: If transaction status is FAILED or BLOCKED, execute RecoveryAgent
+        if tx.status in (TransactionStatus.FAILED, TransactionStatus.BLOCKED):
             applicable_agents.append((AgentType.RECOVERY, "PAYMENT_FAILURE", event_id))
 
-        # Growth Agent is applicable if transaction succeeds
+        # TRANSACTION: If transaction status is SUCCESS, execute GrowthAgent
         if tx.status == TransactionStatus.SUCCESS:
             applicable_agents.append((AgentType.GROWTH, "GROWTH_OPPORTUNITY", str(tx.customer_id)))
+
+    elif event_type_norm == "PAYMENT_FAILURE":
+        try:
+            tx_uuid = uuid.UUID(event_id)
+        except ValueError:
+            raise ValueError(f"Invalid transaction UUID format: {event_id}")
+
+        tx = db.query(Transaction).filter(Transaction.id == tx_uuid).first()
+        if not tx:
+            raise ValueError(f"Transaction with ID {event_id} not found.")
+
+        merchant_id = tx.merchant_id
+        
+        # PAYMENT_FAILURE: execute RecoveryAgent
+        applicable_agents.append((AgentType.RECOVERY, "PAYMENT_FAILURE", event_id))
+        
+        # PAYMENT_FAILURE: execute FraudAgent only when sufficient transaction context exists
+        applicable_agents.append((AgentType.FRAUD, "TRANSACTION", event_id))
 
     elif event_type_norm == "GROWTH_OPPORTUNITY":
         try:
@@ -125,7 +146,57 @@ def process_event_orchestration(
     if not merchant_id:
         raise ValueError("Could not determine merchant context for this event.")
 
-    # 2. Sequential Execution & Resilience Handling
+    # Helper response for processing status
+    in_progress_response = {
+        "event_id": event_id,
+        "status": "PROCESSING",
+        "executed_agents": [],
+        "proposals": [],
+        "final_decision": None,
+        "decision_id": None,
+        "decision_details": []
+    }
+
+    # 2. Database-Backed Idempotency & Lifecycle Check (Objectives 2, 3, 4)
+    workflow = db.query(EventWorkflow).filter_by(event_type=event_type_norm, event_id=event_id).first()
+    
+    if workflow:
+        if workflow.status == "COMPLETED":
+            logger.info(f"Event '{event_id}' already completed. Returning cached result.")
+            return workflow.result
+        elif workflow.status == "PROCESSING":
+            logger.info(f"Event '{event_id}' is currently processing. Returning in-progress response.")
+            return in_progress_response
+        elif workflow.status == "FAILED":
+            logger.info(f"Event '{event_id}' previously failed. Transitioning to PROCESSING for retry.")
+            workflow.status = "PROCESSING"
+            workflow.result = None
+            db.commit()
+    else:
+        # Insert a new EventWorkflow record with status 'PROCESSING' to act as a lock
+        workflow = EventWorkflow(
+            event_type=event_type_norm,
+            event_id=event_id,
+            merchant_id=merchant_id,
+            status="PROCESSING"
+        )
+        db.add(workflow)
+        try:
+            db.commit()
+        except IntegrityError:
+            # unique constraint violation from concurrent request
+            db.rollback()
+            workflow = db.query(EventWorkflow).filter_by(event_type=event_type_norm, event_id=event_id).first()
+            if workflow:
+                if workflow.status == "COMPLETED":
+                    return workflow.result
+                elif workflow.status == "PROCESSING":
+                    return in_progress_response
+            # Fallback failed
+            return in_progress_response
+
+    # 3. Sequential Execution & Resilience Handling
+    execution_failed = False
     for agent_type, ev_type, ev_id in applicable_agents:
         try:
             proposal = orchestrate_agent(agent_type, ev_type, ev_id, merchant_id, db)
@@ -134,9 +205,13 @@ def process_event_orchestration(
         except Exception as e:
             logger.error(f"Specialized Agent {agent_type.value} execution failed: {e}", exc_info=True)
             status = "DEGRADED"
+            execution_failed = True
 
     # If all agents failed or no agents executed
     if not proposals:
+        workflow.status = "FAILED"
+        workflow.result = None
+        db.commit()
         return {
             "event_id": event_id,
             "status": "FAILED",
@@ -147,7 +222,7 @@ def process_event_orchestration(
             "decision_details": []
         }
 
-    # 3. Decision Evaluation & Conflict Resolution
+    # 4. Decision Evaluation & Conflict Resolution
     decisions: List[ShieldDecision] = []
     final_decision_value = "APPROVE"
     final_decision_id: Optional[uuid.UUID] = None
@@ -174,7 +249,7 @@ def process_event_orchestration(
             logger.error(f"AgentShield failed to evaluate proposal {prop.id}: {e}", exc_info=True)
             status = "DEGRADED"
 
-    # 4. Formulate structured response
+    # 5. Formulate structured response and update database state
     proposal_summaries = [
         {
             "proposal_id": str(p.id),
@@ -193,7 +268,7 @@ def process_event_orchestration(
         } for d in decisions
     ]
 
-    return {
+    result_payload = {
         "event_id": event_id,
         "status": status,
         "executed_agents": executed_agents,
@@ -202,3 +277,9 @@ def process_event_orchestration(
         "decision_id": str(final_decision_id) if final_decision_id else None,
         "decision_details": decision_summaries
     }
+
+    workflow.status = "COMPLETED"
+    workflow.result = result_payload
+    db.commit()
+
+    return result_payload

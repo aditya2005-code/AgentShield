@@ -22,6 +22,7 @@ from app.database.models.shield_decision import ShieldDecision
 from app.database.models.merchant_policy import MerchantPolicy
 from app.database.models.agent_permission import AgentPermission
 from app.database.models.audit_log import AuditLog
+from app.database.models.event_workflow import EventWorkflow
 
 __all__ = [
     "MerchantStatus",
@@ -45,4 +46,5 @@ __all__ = [
     "AgentPermission",
     "PolicyEmbedding",
     "AuditLog",
+    "EventWorkflow",
 ]
