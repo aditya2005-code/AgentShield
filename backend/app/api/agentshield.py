@@ -51,3 +51,59 @@ def evaluate_proposal_endpoint(proposal_id: uuid.UUID, db: Session = Depends(get
         reason_summary=decision_db.reason,
         checks=decision_db.checks
     )
+
+
+# Part 12: Event processing orchestration structures
+from pydantic import BaseModel, Field
+from typing import Optional, List
+from app.services.orchestration_service import process_event_orchestration
+
+class EventProcessingRequest(BaseModel):
+    event_type: str = Field(..., description="The type of event (e.g. TRANSACTION, PAYMENT_FAILURE, or GROWTH_OPPORTUNITY)")
+    event_id: str = Field(..., description="The UUID of the transaction or customer context")
+
+class ProposalSummary(BaseModel):
+    proposal_id: str
+    agent_key: str
+    action: str
+    status: str
+
+class DecisionSummary(BaseModel):
+    decision_id: str
+    decision: str
+    final_action: str
+    reason: str
+
+class EventProcessingResponse(BaseModel):
+    event_id: str
+    status: str
+    executed_agents: List[str]
+    proposals: List[ProposalSummary]
+    final_decision: Optional[str] = None
+    decision_id: Optional[str] = None
+    decision_details: List[DecisionSummary]
+
+@router.post(
+    "/process-event", 
+    response_model=EventProcessingResponse, 
+    status_code=status.HTTP_201_CREATED,
+    summary="Process an event end-to-end through multi-agent orchestration and AgentShield"
+)
+def process_event_endpoint(payload: EventProcessingRequest, db: Session = Depends(get_db)):
+    """
+    Receives an event, determines and runs all applicable agents, runs proposals through AgentShield,
+    and returns resolved aggregated decision findings.
+    """
+    try:
+        result = process_event_orchestration(db, payload.event_type, payload.event_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Event processing failed: {str(e)}"
+        )
