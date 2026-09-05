@@ -340,9 +340,9 @@ export default function DecisionsPage() {
                       <div>
                         <div className="font-bold text-white flex items-center gap-1.5">
                           <Sliders className="w-3.5 h-3.5 text-cyan-500" />
-                          {chk.name}
+                          {chk.name || (chk.check ? chk.check.replace(/_/g, ' ').toUpperCase() : 'Guardrail Check')}
                         </div>
-                        <p className="text-slate-400 text-[11px] mt-1 leading-relaxed">{chk.message}</p>
+                        <p className="text-slate-400 text-[11px] mt-1 leading-relaxed">{chk.message || chk.reason}</p>
                       </div>
                       <span className={`text-[9px] font-bold px-2 py-0.5 rounded border uppercase ${
                         chk.status === 'PASSED' 

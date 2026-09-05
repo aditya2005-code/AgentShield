@@ -395,8 +395,8 @@ export default function ProposalsPage() {
                         {selectedProposal.shield_decision.checks.map((chk, index) => (
                           <div key={index} className="flex items-start justify-between p-2 rounded bg-slate-950/60 border border-slate-900">
                             <div>
-                              <div className="font-semibold text-white">{chk.name}</div>
-                              <div className="text-[10px] text-slate-500 mt-0.5">{chk.message}</div>
+                              <div className="font-semibold text-white">{chk.name || (chk.check ? chk.check.replace(/_/g, ' ').toUpperCase() : 'Guardrail Check')}</div>
+                              <div className="text-[10px] text-slate-400 mt-0.5">{chk.message || chk.reason}</div>
                             </div>
                             <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${
                               chk.status === 'PASSED' 

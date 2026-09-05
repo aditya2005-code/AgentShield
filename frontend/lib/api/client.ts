@@ -161,3 +161,37 @@ export async function getDemoScenarios(): Promise<{ scenarios: string[] }> {
 export async function getDemoScenario(scenarioType: string): Promise<DemoScenario> {
   return fetchApi<DemoScenario>(`/api/v1/demo/scenarios/${scenarioType}`);
 }
+
+// 9. Interactive Event Processing API
+export interface ProcessEventPayload {
+  event_type: string;
+  event_id: string;
+}
+
+export interface ProcessEventResponse {
+  event_id: string;
+  status: string;
+  executed_agents: string[];
+  proposals: Array<{
+    proposal_id: string;
+    agent_key: string;
+    action: string;
+    status: string;
+  }>;
+  final_decision: string | null;
+  decision_id: string | null;
+  decision_details: Array<{
+    decision_id: string;
+    decision: string;
+    final_action: string;
+    reason: string;
+  }>;
+}
+
+export async function processEvent(payload: ProcessEventPayload): Promise<ProcessEventResponse> {
+  return fetchApi<ProcessEventResponse>('/api/v1/agentshield/process-event', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
