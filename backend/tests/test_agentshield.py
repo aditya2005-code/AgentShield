@@ -410,3 +410,34 @@ def test_agentshield_persistence_lifecycle():
             db.query(AgentProposal).filter(AgentProposal.id == p_id).delete()
         db.commit()
         db.close()
+
+def test_decision_and_proposal_detail_endpoints():
+    # 1. Test Decisions Detail Endpoint
+    dec_list_res = client.get("/api/v1/decisions?limit=1")
+    assert dec_list_res.status_code == 200
+    decisions = dec_list_res.json()
+    assert len(decisions) > 0
+    decision_id = decisions[0]["decision_id"]
+
+    dec_detail_res = client.get(f"/api/v1/decisions/{decision_id}")
+    assert dec_detail_res.status_code == 200
+    dec_data = dec_detail_res.json()
+    assert dec_data["decision_id"] == decision_id
+    assert "checks" in dec_data
+    assert "proposal" in dec_data
+    assert dec_data["proposal"]["proposal_id"] is not None
+
+    # 2. Test Proposals Detail Endpoint
+    prop_list_res = client.get("/api/v1/proposals?limit=1")
+    assert prop_list_res.status_code == 200
+    proposals = prop_list_res.json()
+    assert len(proposals) > 0
+    proposal_id = proposals[0]["proposal_id"]
+
+    prop_detail_res = client.get(f"/api/v1/proposals/{proposal_id}")
+    assert prop_detail_res.status_code == 200
+    prop_data = prop_detail_res.json()
+    assert prop_data["proposal"]["proposal_id"] == proposal_id
+    assert "agent" in prop_data
+    assert "merchant" in prop_data
+

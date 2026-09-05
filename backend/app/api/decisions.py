@@ -36,6 +36,7 @@ def read_decision(decision_id: uuid.UUID, db: Session = Depends(get_db)):
         )
         
     return {
+        "id": decision.id,
         "decision_id": decision.id,
         "proposal_id": decision.proposal_id,
         "decision": decision.decision,

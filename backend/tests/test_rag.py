@@ -1,3 +1,4 @@
+import httpx
 import uuid
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
@@ -71,6 +72,15 @@ async def test_rag_indexing_lifecycle_and_isolation(mock_get_embedding):
         assert merchant_a is not None
         assert merchant_b is not None
 
+        # Clean up any leftover test policies from previous interrupted runs
+        db.query(PolicyEmbedding).filter(
+            PolicyEmbedding.policy_id.in_(
+                db.query(MerchantPolicy.id).filter(MerchantPolicy.policy_key.like("rag_test_policy_%"))
+            )
+        ).delete(synchronize_session=False)
+        db.query(MerchantPolicy).filter(MerchantPolicy.policy_key.like("rag_test_policy_%")).delete(synchronize_session=False)
+        db.commit()
+
         # 1. Indexing active policies
         policy_a = MerchantPolicy(
             merchant_id=merchant_a.id,
@@ -112,37 +122,38 @@ async def test_rag_indexing_lifecycle_and_isolation(mock_get_embedding):
         # 3. Strict Merchant A / Merchant B isolation
         query_payload = {"query_text": "discount limits", "limit": 5}
         
-        # Query Merchant A's RAG space
-        response_a = client.post(f"/api/v1/rag/merchants/{merchant_a.id}/query", json=query_payload)
-        assert response_a.status_code == 200
-        results_a = response_a.json()
-        
-        # Verify Merchant B's policy (with max_discount_percent=30) never appears
-        policy_keys_a = [r["policy_key"] for r in results_a]
-        assert "rag_test_policy_a" in policy_keys_a
-        assert "rag_test_policy_b" not in policy_keys_a
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as ac:
+            # Query Merchant A's RAG space
+            response_a = await ac.post(f"/api/v1/rag/merchants/{merchant_a.id}/query", json=query_payload)
+            assert response_a.status_code == 200
+            results_a = response_a.json()
+            
+            # Verify Merchant B's policy (with max_discount_percent=30) never appears
+            policy_keys_a = [r["policy_key"] for r in results_a]
+            assert "rag_test_policy_a" in policy_keys_a
+            assert "rag_test_policy_b" not in policy_keys_a
 
-        # Query Merchant B's RAG space
-        response_b = client.post(f"/api/v1/rag/merchants/{merchant_b.id}/query", json=query_payload)
-        assert response_b.status_code == 200
-        results_b = response_b.json()
-        policy_keys_b = [r["policy_key"] for r in results_b]
-        assert "rag_test_policy_b" in policy_keys_b
-        assert "rag_test_policy_a" not in policy_keys_b
+            # Query Merchant B's RAG space
+            response_b = await ac.post(f"/api/v1/rag/merchants/{merchant_b.id}/query", json=query_payload)
+            assert response_b.status_code == 200
+            results_b = response_b.json()
+            policy_keys_b = [r["policy_key"] for r in results_b]
+            assert "rag_test_policy_b" in policy_keys_b
+            assert "rag_test_policy_a" not in policy_keys_b
 
-        # 4. Inactive policy exclusion & deletion
-        policy_a.is_active = False
-        db.commit()
-        
-        # Re-indexing an inactive policy should remove its embedding from the DB
-        await index_policy(db, policy_a)
-        emb_inactive = db.query(PolicyEmbedding).filter_by(policy_id=policy_a.id).first()
-        assert emb_inactive is None
+            # 4. Inactive policy exclusion & deletion
+            policy_a.is_active = False
+            db.commit()
+            
+            # Re-indexing an inactive policy should remove its embedding from the DB
+            await index_policy(db, policy_a)
+            emb_inactive = db.query(PolicyEmbedding).filter_by(policy_id=policy_a.id).first()
+            assert emb_inactive is None
 
-        # Empty retrieval: query Merchant A space, should return empty
-        response_empty = client.post(f"/api/v1/rag/merchants/{merchant_a.id}/query", json=query_payload)
-        assert response_empty.status_code == 200
-        assert len(response_empty.json()) == 0
+            # Empty retrieval: query Merchant A space, should return empty
+            response_empty = await ac.post(f"/api/v1/rag/merchants/{merchant_a.id}/query", json=query_payload)
+            assert response_empty.status_code == 200
+            assert len(response_empty.json()) == 0
 
     finally:
         # Cleanup

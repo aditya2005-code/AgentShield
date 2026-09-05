@@ -203,6 +203,7 @@ def process_event_orchestration(
             proposals.append(proposal)
             executed_agents.append(agent_type.value)
         except Exception as e:
+            db.rollback()
             logger.error(f"Specialized Agent {agent_type.value} execution failed: {e}", exc_info=True)
             status = "DEGRADED"
             execution_failed = True
